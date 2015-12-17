@@ -3,7 +3,9 @@ import json
 import geojson
 
 from .errors import (OverpassSyntaxError, TimeoutError, MultipleRequestsError,
-                     ServerLoadError, UnknownOverpassError, ServerRuntimeError)
+                     ServerLoadError, UnknownOverpassError, ServerRuntimeError,
+                     ApiWrapperError, NominatimError)
+from .helpers import Nominatim
 
 class API(object):
     """A simple Python wrapper for the OpenStreetMap Overpass API"""
@@ -14,6 +16,11 @@ class API(object):
     _timeout = 25  # seconds
     _endpoint = "http://overpass-api.de/api/interpreter"
     _debug = False
+    _query = None
+    _responseformat = "geojson"
+    _area = None
+    _area_id = None
+    _status = None
 
     _QUERY_TEMPLATE = "[out:{out}];{query}out body;"
     _GEOJSON_QUERY_TEMPLATE = "[out:json];{query}out body geom;"
@@ -22,29 +29,86 @@ class API(object):
         self.endpoint = kwargs.get("endpoint", self._endpoint)
         self.timeout = kwargs.get("timeout", self._timeout)
         self.debug = kwargs.get("debug", self._debug)
-        self._status = None
+        self.area = kwargs.get("area", self._area)
+        self.responseformat = kwargs.get("responseformat", self._responseformat)
+        self.query = kwargs.get("query", self._query)
 
+        # set up debugging
         if self.debug:
-            import httplib
             import logging
-            httplib.HTTPConnection.debuglevel = 1
+            try:
+                import http.client as http_client
+            except ImportError:
+                # Python 2
+                import httplib as http_client
+            http_client.HTTPConnection.debuglevel = 1
 
-            logging.basicConfig()
+            # You must initialize logging, otherwise you'll not see debug output.
+            logging.basicConfig() 
             logging.getLogger().setLevel(logging.DEBUG)
             requests_log = logging.getLogger("requests.packages.urllib3")
             requests_log.setLevel(logging.DEBUG)
             requests_log.propagate = True
 
-    def Get(self, query, responseformat="geojson"):
+    @property
+    def area(self):
+        return self._area
+
+    @area.setter
+    def area(self, val):
+        if val:
+            self._area = val
+            nominatim_result = Nominatim.lookup(val)
+            area_id = self._toAreaId(nominatim_result)
+            self.area_id = area_id
+
+    @property
+    def area_id(self):
+        return self._area_id
+
+    @area_id.setter
+    def area_id(self, val):
+        self._area_id = val
+
+    @property
+    def query(self):
+        return self._query
+
+    @query.setter
+    def query(self, val):
+        self._query = val
+        if val:
+            self._raw_query = self._ConstructQLQuery(val)
+
+    @property
+    def responseformat(self):
+        return self._responseformat
+
+    @responseformat.setter
+    def responseformat(self, val):
+        self._responseformat = val
+
+    @property
+    def raw_query(self):
+        return self._raw_query
+
+    @raw_query.setter
+    def raw_query(self, val):
+        self._raw_query = val
+
+    def Get(self, query=None):
         """Pass in an Overpass query in Overpass QL"""
 
-        # Construct full Overpass query
-        full_query = self._ConstructQLQuery(query, responseformat=responseformat)
-        
-        # Get the response from Overpass
-        raw_response = self._GetFromOverpass(full_query)
+        query = self._ConstructQLQuery(query) or self.raw_query
 
-        if responseformat == "xml":
+        if not query:
+            raise ApiWrapperError('No query')
+            return False
+
+        # Get the response from Overpass
+        raw_response = self._GetFromOverpass(query)
+
+        if self.responseformat == "xml":
             return raw_response
             
         response = json.loads(raw_response)
@@ -58,7 +122,7 @@ class API(object):
         if overpass_remark and overpass_remark.startswith('runtime error'):
             raise ServerRuntimeError(overpass_remark)
 
-        if responseformat is not "geojson":
+        if self.responseformat is not "geojson":
             return response
 
         # construct geojson
@@ -68,21 +132,27 @@ class API(object):
         """Search for something."""
         raise NotImplementedError()
 
-    def _ConstructQLQuery(self, userquery, responseformat):
-        raw_query = str(userquery)
-        if not raw_query.endswith(";"):
-            raw_query += ";"
+    def _ConstructQLQuery(self, query):
+        query = str(query)
+        if not query.endswith(";"):
+            query += ";"
 
-        if responseformat == "geojson":
-            template = self._GEOJSON_QUERY_TEMPLATE
-            complete_query = template.format(query=raw_query)
-        else:
-            template = self._QUERY_TEMPLATE
-            complete_query = template.format(query=raw_query, out=responseformat)
+        # Inject area into user query
+        query = self._inject_area(query)
 
         if self.debug:
-            print(complete_query)
-        return complete_query
+            print(query)
+
+        if self.responseformat == "geojson":
+            template = self._GEOJSON_QUERY_TEMPLATE
+            query = template.format(query=query)
+        else:
+            template = self._QUERY_TEMPLATE
+            query = template.format(query=query, out=self.responseformat)
+
+        if self.debug:
+            print(query)
+        return query
 
     def _GetFromOverpass(self, query):
         """This sends the API request to the Overpass instance and
@@ -97,7 +167,7 @@ class API(object):
                 timeout=self.timeout,
                 headers={'Accept-Charset': 'utf-8;q=0.7,*;q=0.7'}
             )
-            
+
         except requests.exceptions.Timeout:
             raise TimeoutError(self._timeout)
 
@@ -141,3 +211,34 @@ class API(object):
             features.append(feature)
 
         return geojson.FeatureCollection(features)
+
+    def _toAreaId(self, nominatim_response):
+        """Converts an OSM id to an Overpass Area ID according to 
+        http://wiki.openstreetmap.org/wiki/Overpass_API/Overpass_QL#By_area_.28area.29"""
+
+        WAY_MODIFIER = 2400000000
+        RELATION_MODIFIER = 3600000000
+        if nominatim_response.get('osm_type') and nominatim_response.get('osm_id'):
+            if nominatim_response.get('osm_type') == "way":
+                return int(nominatim_response.get('osm_id')) + WAY_MODIFIER
+            elif nominatim_response.get('osm_type') == "relation":
+                return int(nominatim_response.get('osm_id')) + RELATION_MODIFIER
+        else:
+            return NominatimError("Nominatim lookup did not return a way or relation with confidence")
+
+    def _inject_area(self, query):
+        """injects defined area id into user query"""
+
+        import re
+
+        # If no area ID is defined, just pass through
+        if not self.area_id:
+            return query
+
+        if self.debug:
+            print("before inject: ", query)
+
+        return re.sub(
+            r'((node|way|relation)[^;]*)',
+            r'\1(area:{area_id})'.format(area_id=self.area_id),
+            query)
