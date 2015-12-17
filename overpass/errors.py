@@ -43,3 +43,16 @@ class ServerRuntimeError(OverpassError):
 
     def __init__(self, message):
         self.message = message
+
+
+class ApiWrapperError(OverpassError):
+    """Overpass API Wrapper returned an error"""
+
+    def __init__(self, message):
+        self.message = message
+
+class NominatimError(OverpassError):
+    """Nominatim returned a runtime error"""
+
+    def __init__(self, message):
+        self.message = message
