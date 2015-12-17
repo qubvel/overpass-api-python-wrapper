@@ -15,11 +15,11 @@ import overpass
 @click.argument('query', type=str)
 def cli(timeout, endpoint, responseformat, query):
     """Run query"""
-    api = overpass.API(timeout=timeout, endpoint=endpoint)
+    api = overpass.API(timeout=timeout, endpoint=endpoint, responseformat=responseformat)
     if responseformat not in api.SUPPORTED_FORMATS:
         print("format {} not supported. Supported formats: {}".format(
             responseformat,
             ", ".join(api.SUPPORTED_FORMATS)))
         sys.exit(1)
-    result = api.Get(query, responseformat=responseformat)
+    result = api.Get(query)
     click.echo(result)
