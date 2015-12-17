@@ -92,8 +92,8 @@ You can specify the format of the response. By default, you will get GeoJSON usi
 .. code:: python
 
     >>> import overpass
-    >>> api = overpass.API()
-    >>> response = api.Get('node["name"="Salt Lake City"]', responseformat="xml")
+    >>> api = overpass.API(responseformat="xml")
+    >>> response = api.Get('node["name"="Salt Lake City"]')
 
 Parameters
 ~~~~~~~~~~
