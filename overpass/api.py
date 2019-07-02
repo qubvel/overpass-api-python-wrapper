@@ -181,6 +181,9 @@ class API(object):
                         points.append((coords["lon"], coords["lat"]))
                     geometry = geojson.LineString(points)
             else:
+                if self.debug:
+                    logging.getLogger().warn('Geometry of type `{}` skipped.'.format(elem_type))
+                    print('Geometry of type `{}` skipped.'.format(elem_type))
                 continue
 
             feature = geojson.Feature(
